@@ -1,0 +1,70 @@
+# JobRadar Docker Compose
+# Runs Postgres locally as a free alternative to Supabase.
+# For cloud deployment, replace the postgres service with your Supabase DATABASE_URL.
+#
+# Usage:
+#   docker compose up -d postgres   # start DB only
+#   docker compose run --rm app python scripts/setup_db.py
+#   docker compose run --rm app python scripts/run_pipeline.py --mode all
+#   docker compose up dashboard      # start Streamlit dashboard
+
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Local Postgres (free alternative to Supabase for local dev)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jobradar
+      POSTGRES_USER: jobradar
+      POSTGRES_PASSWORD: jobradar_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobradar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Pipeline runner (scrape + score + alert)
+  # ---------------------------------------------------------------------------
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override DATABASE_URL for local Docker Postgres
+      DATABASE_URL: postgresql://jobradar:jobradar_local@postgres:5432/jobradar
+    volumes:
+      - ./resume:/app/resume
+      - ./db:/app/db
+    command: python scripts/run_pipeline.py --mode all
+
+  # ---------------------------------------------------------------------------
+  # Streamlit dashboard
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://jobradar:jobradar_local@postgres:5432/jobradar
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./resume:/app/resume
+      - ./db:/app/db
+    command: streamlit run dashboard/app.py --server.port=8501 --server.address=0.0.0.0
+
+volumes:
+  pgdata:

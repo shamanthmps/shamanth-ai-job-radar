@@ -1,0 +1,66 @@
+# JobRadar — Python dependencies
+# All AI/LLM calls use FREE tier providers only (Groq, Gemini, Ollama)
+# No paid subscription required.
+
+# ---------------------------------------------------------------------------
+# Core scraping
+# ---------------------------------------------------------------------------
+python-jobspy>=0.1.14          # LinkedIn, Indeed, Glassdoor, Google, Naukri
+playwright>=1.40.0             # Workday + supplementary scrapers
+httpx>=0.27.0                  # Async HTTP for Greenhouse, Lever, Ashby, Wellfound
+
+# ---------------------------------------------------------------------------
+# AI / LLM — FREE TIER providers via LiteLLM
+# ---------------------------------------------------------------------------
+litellm>=1.35.0                # Universal LLM client covering Groq, Gemini, Ollama
+# Provider SDKs (install only what you use):
+groq>=0.9.0                    # Groq SDK (free tier: 14,400 req/day)
+google-generativeai>=0.7.0     # Gemini SDK (free tier: 15 RPM)
+# ollama — no pip package needed; litellm calls it via HTTP directly
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+asyncpg>=0.29.0                # Async PostgreSQL (Supabase free tier or local)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+pydantic>=2.0.0
+
+# ---------------------------------------------------------------------------
+# Resume generation
+# ---------------------------------------------------------------------------
+reportlab>=4.0.0               # ATS-safe PDF generation
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+streamlit>=1.33.0              # Free on Streamlit Community Cloud
+pandas>=2.0.0                  # Data table display
+numpy>=1.26.0                  # Score distribution charts
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+# Telegram: httpx (already listed above)
+# Email: stdlib smtplib (no install needed)
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+python-dotenv>=1.0.0           # Load .env file
+python-dateutil>=2.9.0         # Flexible date parsing
+
+# ---------------------------------------------------------------------------
+# Optional: Easy Apply automation (NOT required for basic pipeline)
+# ---------------------------------------------------------------------------
+# Uncomment to enable LinkedIn Easy Apply bot (requires Chrome installed):
+# undetected-chromedriver>=3.5.5
+# selenium>=4.18.0
+
+# ---------------------------------------------------------------------------
+# Optional: LinkedIn employee lookup for referral research
+# ---------------------------------------------------------------------------
+# Uncomment to enable StaffSpy integration:
+# python-staffspy>=0.1.0

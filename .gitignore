@@ -1,0 +1,67 @@
+# JobRadar gitignore
+# ============================================================
+
+# Environment & Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+
+# Credentials cache (Playwright sessions, LinkedIn cookies)
+.auth/
+session_state/
+cookies/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Database
+*.db
+*.sqlite3
+
+# Runtime data dirs (keep placeholders via .gitkeep)
+db/*.json
+
+# Generated resume artifacts (personal content — not for git)
+resume/generated/
+resume/base_resume.md
+resume/profile.md
+
+# Dashboard cache / secrets (keep example, ignore actual secrets)
+.streamlit/secrets.toml
+dashboard/.streamlit/secrets.toml
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# Node (if using Next.js dashboard)
+node_modules/
+.next/
+
+# Docker volumes
+data/
+pgdata/

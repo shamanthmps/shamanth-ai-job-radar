@@ -1,0 +1,67 @@
+name: JobRadar Pipeline
+
+on:
+  # Run every 6 hours
+  schedule:
+    - cron: "0 */6 * * *"
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, scrape, score, alert, resume]
+
+jobs:
+  run-pipeline:
+    name: Run JobRadar Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'groq/llama-3.3-70b-versatile' }}
+          LLM_CALL_DELAY: "2.5"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          LINKEDIN_EMAIL: ${{ secrets.LINKEDIN_EMAIL }}
+          LINKEDIN_PASSWORD: ${{ secrets.LINKEDIN_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.JOBRADAR_GITHUB_TOKEN }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'all' }}"
+          echo "Running pipeline in mode: $MODE"
+          python scripts/run_pipeline.py --mode "$MODE"
+
+      - name: Upload generated resumes as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-resumes-${{ github.run_id }}
+          path: resume/generated/
+          retention-days: 30
+          if-no-files-found: ignore
