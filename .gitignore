@@ -8,6 +8,7 @@
 *.key
 *.pem
 *.p12
+*.local
 
 # Credentials cache (Playwright sessions, LinkedIn cookies)
 .auth/

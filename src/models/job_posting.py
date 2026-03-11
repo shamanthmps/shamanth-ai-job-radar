@@ -96,16 +96,13 @@ class JobPosting(BaseModel):
         return v.strip()
 
     def to_db_dict(self) -> dict:
-        """Convert to dict suitable for DB insert."""
+        """Convert to dict suitable for asyncpg DB insert."""
         data = self.model_dump()
         data["id"] = str(data["id"])
         data["source"] = data["source"].value if data["source"] else None
         data["salary_band"] = data["salary_band"].value if data["salary_band"] else None
         data["company_tier"] = data["company_tier"].value if data["company_tier"] else None
-        if data.get("scraped_at"):
-            data["scraped_at"] = data["scraped_at"].isoformat()
-        if data.get("posted_at"):
-            data["posted_at"] = data["posted_at"].isoformat()
+        # Keep datetimes as datetime objects — asyncpg requires them, not ISO strings
         return data
 
 

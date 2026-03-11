@@ -56,11 +56,11 @@ async def run_scrape(db: Database) -> int:
             is_new = await db.upsert_job(job)
             if is_new:
                 new_total += 1
-        await db.log_scraper_run("linkedin+indeed+naukri+google", len(jobs), new_total)
+        await db.log_scraper_run("indeed", len(jobs), new_total)
         logger.info("JobSpy: %d jobs found, %d new", len(jobs), new_total)
     except Exception as exc:
         logger.error("JobSpy scrape failed: %s", exc)
-        await db.log_scraper_run("jobspy", 0, 0, status="failed", errors=str(exc))
+        await db.log_scraper_run("indeed", 0, 0, status="failed", errors=str(exc))
 
     # --- Supplementary: Greenhouse (API-based, reliable) ---
     logger.info("=== Stage 2: Greenhouse API scrape ===")

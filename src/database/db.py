@@ -30,8 +30,15 @@ class Database:
         self._pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:
+        from urllib.parse import urlparse
+        parsed = urlparse(self._dsn.split("?")[0])
         self._pool = await asyncpg.create_pool(
-            self._dsn,
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            user=parsed.username,
+            password=parsed.password,
+            database=(parsed.path or "/postgres").lstrip("/") or "postgres",
+            ssl='require',
             min_size=2,
             max_size=10,
             command_timeout=30,

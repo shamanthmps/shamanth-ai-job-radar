@@ -17,7 +17,6 @@ Deploy free on Streamlit Cloud:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -39,24 +38,56 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Lazy imports (avoid loading heavy modules on every tab)
-# ---------------------------------------------------------------------------
-from src.database.db import Database
-
-
-# ---------------------------------------------------------------------------
-# Shared DB connection (cached per session)
+# Synchronous DB helper (psycopg2) — avoids asyncpg/event-loop issues in Streamlit
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner="Connecting to database...")
-def get_db() -> Database:
-    url = os.environ.get("DATABASE_URL", "")
+def get_conn_params() -> dict:
+    """Return psycopg2 connection params from secrets/env. Cached once per session."""
+    url = st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL", "")
     if not url:
-        st.error("DATABASE_URL not set. Add it to .streamlit/secrets.toml or your environment.")
+        st.error("DATABASE_URL not set. Add it to .streamlit/secrets.toml.")
         st.stop()
-    db = Database(url)
-    asyncio.get_event_loop().run_until_complete(db.connect())
-    return db
+    for key in ("GROQ_API_KEY", "LLM_MODEL", "LLM_CALL_DELAY"):
+        if key in st.secrets and key not in os.environ:
+            os.environ[key] = str(st.secrets[key])
+    from urllib.parse import urlparse
+    p = urlparse(url.split("?")[0])
+    return dict(
+        host=p.hostname, port=p.port or 5432,
+        user=p.username, password=p.password,
+        dbname=(p.path or "/postgres").lstrip("/") or "postgres",
+        sslmode="require",
+    )
+
+
+def db_query(sql: str, params: tuple = ()) -> list[dict]:
+    """Execute a SELECT query and return list of dicts."""
+    import psycopg2
+    import psycopg2.extras
+    try:
+        conn = psycopg2.connect(**get_conn_params())
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        st.error(f"Database error: {exc}")
+        return []
+
+
+def db_execute(sql: str, params: tuple = ()) -> None:
+    """Execute an INSERT/UPDATE statement."""
+    import psycopg2
+    try:
+        conn = psycopg2.connect(**get_conn_params())
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        st.error(f"Database error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -114,14 +145,15 @@ def _trigger_pipeline() -> None:
 # Tab 1: Top Picks
 # ---------------------------------------------------------------------------
 
-def render_top_picks(db: Database) -> None:
+def render_top_picks() -> None:
     st.header("🔥 Top Picks")
     st.caption("AI-scored jobs matching your TPM profile — sorted by score.")
 
     min_score = st.slider("Minimum score", 60, 95, 80, 5)
 
-    data = asyncio.get_event_loop().run_until_complete(
-        db.get_top_opportunities(limit=50, min_score=min_score)
+    data = db_query(
+        "SELECT * FROM v_top_opportunities WHERE total_score >= %s ORDER BY total_score DESC LIMIT 50",
+        (min_score,),
     )
 
     if not data:
@@ -134,24 +166,21 @@ def render_top_picks(db: Database) -> None:
         emoji = "🔥" if score >= 90 else "🎯" if score >= 80 else "👀"
 
         with st.expander(
-            f"{emoji} **{row.get('title', 'Unknown')}** — {row.get('company_name', '')} "
+            f"{emoji} **{row.get('title', 'Unknown')}** — {row.get('company', '')} "
             f"| {score}/100 · {label} · {row.get('location', '')}",
             expanded=score >= 85,
         ):
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Score", score)
-            col2.metric("Fit", row.get("role_fit", "—").title())
-            col3.metric("Comp Probability", row.get("compensation_probability", "—").title())
-            col4.metric("Salary Band", _format_band(row.get("estimated_salary_band")))
+            col2.metric("Fit", (row.get("role_fit") or "—").title())
+            col3.metric("Comp Probability", (row.get("compensation_probability") or "—").title())
+            col4.metric("Salary Band", _format_band(row.get("salary_band")))
 
-            if notes := row.get("notes"):
+            if notes := row.get("ai_notes"):
                 st.markdown(f"**AI Notes:** {notes}")
 
             if tags := row.get("fit_tags"):
                 st.markdown("**Tags:** " + " · ".join(f"`{t}`" for t in tags))
-
-            if flags := row.get("red_flags"):
-                st.warning("**⚠ Red flags:** " + " · ".join(flags))
 
             desc = row.get("description", "")
             if desc:
@@ -159,12 +188,12 @@ def render_top_picks(db: Database) -> None:
                     st.text_area("Description", desc[:800], height=120, key=f"desc_{row['id']}", disabled=True)
 
             col_a, col_b, col_c = st.columns(3)
-            if url := row.get("external_url"):
-                col_a.link_button("View Job", url)
+            if job_url := row.get("url"):
+                col_a.link_button("View Job", job_url)
             if col_b.button("Generate Resume", key=f"res_{row['id']}"):
-                _generate_resume_for_job(row, db)
+                _generate_resume_for_job(row)
             if col_c.button("Mark Applied", key=f"apply_{row['id']}"):
-                _mark_applied(row, db)
+                _mark_applied(row)
 
 
 def _format_band(band: str | None) -> str:
@@ -179,13 +208,13 @@ def _format_band(band: str | None) -> str:
     return mapping.get(band or "unknown", band or "—")
 
 
-def _generate_resume_for_job(row: dict, db: Database) -> None:
+def _generate_resume_for_job(row: dict) -> None:
     from src.ai.resume_customizer import generate_resume_artifacts
     with st.spinner("Generating tailored resume..."):
         artifacts = generate_resume_artifacts(
             job_id=row["id"],
             title=row.get("title", ""),
-            company=row.get("company_name", ""),
+            company=row.get("company", ""),
             description=row.get("description", ""),
         )
     if artifacts.get("resume_markdown"):
@@ -201,15 +230,11 @@ def _generate_resume_for_job(row: dict, db: Database) -> None:
         st.error("Resume generation failed. Check that base_resume.md exists and LLM is configured.")
 
 
-def _mark_applied(row: dict, db: Database) -> None:
-    from uuid import UUID, uuid4
-    asyncio.get_event_loop().run_until_complete(
-        db.create_application(
-            application_id=uuid4(),
-            job_id=UUID(str(row["id"])),
-            status="applied",
-            notes="Applied via dashboard",
-        )
+def _mark_applied(row: dict) -> None:
+    from uuid import uuid4
+    db_execute(
+        "INSERT INTO applications (id, job_id, status, notes) VALUES (%s, %s, %s, %s)",
+        (str(uuid4()), str(row["id"]), "applied", "Applied via dashboard"),
     )
     st.success("Marked as applied!")
 
@@ -218,7 +243,7 @@ def _mark_applied(row: dict, db: Database) -> None:
 # Tab 2: All Jobs
 # ---------------------------------------------------------------------------
 
-def render_all_jobs(db: Database) -> None:
+def render_all_jobs() -> None:
     import pandas as pd
 
     st.header("📋 All Jobs")
@@ -229,22 +254,29 @@ def render_all_jobs(db: Database) -> None:
     source_filter = col2.text_input("Source (e.g. linkedin, ashby)", "")
     location_filter = col3.text_input("Location keyword", "")
 
-    # Fetch raw jobs + scores view
-    query = """
-        SELECT j.id, j.title, j.company_name, j.location, j.is_remote,
-               j.source, j.posted_at, j.external_url,
-               s.total_score, s.role_fit, s.estimated_salary_band
+    where = ["1=1"]
+    params: list = []
+    if min_score > 0:
+        where.append("s.total_score >= %s")
+        params.append(int(min_score))
+    if source_filter:
+        where.append("j.source ILIKE %s")
+        params.append(source_filter)
+    if location_filter:
+        where.append("j.location ILIKE %s")
+        params.append(f"%{location_filter}%")
+
+    query = f"""
+        SELECT j.id, j.title, j.company, j.location, j.is_remote,
+               j.source, j.posted_at, j.url AS external_url,
+               s.total_score, s.role_fit, s.salary_band AS estimated_salary_band
         FROM job_postings j
         LEFT JOIN job_scores s ON s.job_id = j.id
-        WHERE ($1 = 0 OR s.total_score >= $1)
-          AND ($2 = '' OR j.source ILIKE $2)
-          AND ($3 = '' OR j.location ILIKE '%' || $3 || '%')
+        WHERE {' AND '.join(where)}
         ORDER BY s.total_score DESC NULLS LAST, j.scraped_at DESC
         LIMIT 500
     """
-    rows = asyncio.get_event_loop().run_until_complete(
-        db._pool.fetch(query, min_score, source_filter, location_filter)
-    ) if hasattr(db, "_pool") and db._pool else []
+    rows = db_query(query, tuple(params))
 
     if not rows:
         st.info("No jobs found. Run the pipeline first.")
@@ -259,10 +291,10 @@ def render_all_jobs(db: Database) -> None:
         axis=1,
     )
 
-    display_cols = ["title", "company_name", "location", "remote", "source", "score", "role_fit", "estimated_salary_band"]
+    display_cols = ["title", "company", "location", "remote", "source", "score", "role_fit", "estimated_salary_band"]
     st.dataframe(
         df[display_cols].rename(columns={
-            "title": "Title", "company_name": "Company", "location": "Location",
+            "title": "Title", "company": "Company", "location": "Location",
             "remote": "Remote", "source": "Source", "score": "Score",
             "role_fit": "Fit", "estimated_salary_band": "Salary Band"
         }),
@@ -276,24 +308,18 @@ def render_all_jobs(db: Database) -> None:
 # Tab 3: Applications
 # ---------------------------------------------------------------------------
 
-def render_applications(db: Database) -> None:
+def render_applications() -> None:
     import pandas as pd
 
     st.header("📬 Applications Tracker")
 
-    query = """
+    rows = db_query("""
         SELECT a.id, a.status, a.applied_at, a.notes,
-               j.title, j.company_name, j.external_url
+               j.title, j.company AS company_name, j.url AS external_url
         FROM applications a
         JOIN job_postings j ON j.id = a.job_id
         ORDER BY a.applied_at DESC
-    """
-    try:
-        rows = asyncio.get_event_loop().run_until_complete(
-            db._pool.fetch(query)
-        )
-    except Exception:
-        rows = []
+    """)
 
     if not rows:
         st.info("No applications tracked yet. Mark jobs as applied from the Top Picks tab.")
@@ -330,8 +356,9 @@ def render_applications(db: Database) -> None:
                 key=f"status_{row['id']}",
             )
             if st.button("Update", key=f"upd_{row['id']}"):
-                asyncio.get_event_loop().run_until_complete(
-                    db.update_application_status(row["id"], new_status)
+                db_execute(
+                    "UPDATE applications SET status = %s WHERE id = %s",
+                    (new_status, str(row["id"])),
                 )
                 st.success("Updated!")
                 st.rerun()
@@ -341,26 +368,20 @@ def render_applications(db: Database) -> None:
 # Tab 4: Insights
 # ---------------------------------------------------------------------------
 
-def render_insights(db: Database) -> None:
+def render_insights() -> None:
     import pandas as pd
 
     st.header("📊 Weekly Insights")
     st.caption("Trends from the last 7 days of scraping.")
 
-    try:
-        query = """
-            SELECT j.company_name, j.source, j.location, j.is_remote,
-                   j.scraped_at, s.total_score, s.estimated_salary_band
-            FROM job_postings j
-            LEFT JOIN job_scores s ON s.job_id = j.id
-            WHERE j.scraped_at >= NOW() - INTERVAL '7 days'
-        """
-        rows = asyncio.get_event_loop().run_until_complete(db._pool.fetch(query))
-        df = pd.DataFrame([dict(r) for r in rows])
-    except Exception as exc:
-        st.error(f"Could not load insights: {exc}")
-        return
-
+    rows = db_query("""
+        SELECT j.company, j.source, j.location, j.is_remote,
+               j.scraped_at, s.total_score, s.salary_band AS estimated_salary_band
+        FROM job_postings j
+        LEFT JOIN job_scores s ON s.job_id = j.id
+        WHERE j.scraped_at >= NOW() - INTERVAL '7 days'
+    """)
+    df = pd.DataFrame(rows)
     if df.empty:
         st.info("No data from the last 7 days yet. Run the pipeline first.")
         return
@@ -369,7 +390,7 @@ def render_insights(db: Database) -> None:
     col1.metric("Total Jobs", len(df))
     col2.metric("Avg Score", f"{df['total_score'].dropna().mean():.0f}" if "total_score" in df else "—")
     col3.metric("Remote %", f"{df['is_remote'].mean() * 100:.0f}%" if "is_remote" in df else "—")
-    col4.metric("Unique Companies", df["company_name"].nunique())
+    col4.metric("Unique Companies", df["company"].nunique())
 
     st.divider()
 
@@ -377,7 +398,7 @@ def render_insights(db: Database) -> None:
 
     with col_a:
         st.subheader("Top Companies Hiring")
-        top_co = df["company_name"].value_counts().head(15)
+        top_co = df["company"].value_counts().head(15)
         st.bar_chart(top_co)
 
     with col_b:
@@ -459,16 +480,16 @@ def _days_since_str(iso: str) -> str:
 
 def main() -> None:
     tab = render_sidebar()
-    db = get_db()
+    get_conn_params()  # warm up connection check once per session
 
     if tab == "🔥 Top Picks":
-        render_top_picks(db)
+        render_top_picks()
     elif tab == "📋 All Jobs":
-        render_all_jobs(db)
+        render_all_jobs()
     elif tab == "📬 Applications":
-        render_applications(db)
+        render_applications()
     elif tab == "📊 Insights":
-        render_insights(db)
+        render_insights()
     elif tab == "🔬 OSS Tracker":
         render_oss_tracker()
 

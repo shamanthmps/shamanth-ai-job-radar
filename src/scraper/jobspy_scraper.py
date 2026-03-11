@@ -42,20 +42,23 @@ logger = logging.getLogger(__name__)
 SEARCH_QUERIES = [
     "Technical Program Manager",
     "Staff Technical Program Manager",
-    "Senior Technical Program Manager",
     "Engineering Program Manager",
-    "Delivery Lead Agile",
-    "Director Engineering Program Management",
 ]
 
 LOCATIONS = [
     "Bengaluru, India",
-    "Bangalore, India",
-    "India",           # catches remote-India roles
+    "India",  # catches remote-India roles
 ]
 
-# JobSpy site names that support India / international search
-JOBSPY_SITES = ["linkedin", "indeed", "glassdoor", "google", "naukri"]
+# JobSpy site names — LinkedIn intentionally excluded here.
+# Glassdoor (400 - India location broken), Naukri (406 - recaptcha), Google (0 results for India) all excluded.
+# LinkedIn is handled separately below with conservative settings.
+JOBSPY_SITES_NO_LINKEDIN = ["indeed"]
+
+# Separate conservative LinkedIn config — max 15 results, no description fetch
+# (fetching descriptions multiplies requests 15x per query — too aggressive)
+LINKEDIN_MAX_RESULTS = 15
+LINKEDIN_FETCH_DESCRIPTION = False  # Set True only if using a proxy
 
 # Company tier lookup — companies explicitly known to pay above 70L
 HIGH_TIER_COMPANIES: dict[str, CompanyTier] = {
@@ -103,37 +106,37 @@ HIGH_TIER_COMPANIES: dict[str, CompanyTier] = {
 # ---------------------------------------------------------------------------
 
 def run_jobspy_scrape(
-    results_per_query: int = 25,
+    results_per_query: int = 20,
     hours_old: int = 72,
     proxies: Optional[list[str]] = None,
+    include_linkedin: bool = True,
 ) -> list[JobPosting]:
     """
-    Run all search queries across all JobSpy-supported sites.
-    Returns deduplicated list of JobPosting objects.
+    Run all search queries across job sites.
+    LinkedIn is scraped conservatively (1 query, low result count, no description fetch)
+    to avoid IP-level rate limiting. It does NOT use your LinkedIn account.
 
     Args:
         results_per_query: Max results per (site × query × location) combination.
-            Keep low for LinkedIn (≤25) to avoid rate limiting.
         hours_old: Only fetch jobs posted within this many hours.
-        proxies: Optional list of proxy strings in format 'user:pass@host:port'.
-            Recommended for LinkedIn to avoid rate limiting.
+        proxies: Optional proxy list — recommended if using LinkedIn description fetch.
+        include_linkedin: Whether to include LinkedIn (default True, conservative mode).
     """
     all_jobs: list[JobPosting] = []
     seen_hashes: set[str] = set()
 
+    # --- Non-LinkedIn sites: full query matrix ---
     for query in SEARCH_QUERIES:
         for location in LOCATIONS:
-            logger.info("[JobSpy] Scraping: '%s' in '%s'", query, location)
+            logger.info("[JobSpy] Scraping (no-LinkedIn): '%s' in '%s'", query, location)
             try:
                 df = scrape_jobs(
-                    site_name=JOBSPY_SITES,
+                    site_name=JOBSPY_SITES_NO_LINKEDIN,
                     search_term=query,
                     location=location,
                     results_wanted=results_per_query,
                     hours_old=hours_old,
                     country_indeed="India",
-                    is_remote=False,      # We want both remote and on-site
-                    linkedin_fetch_description=True,  # Slower but needed for scoring
                     description_format="markdown",
                     verbose=1,
                     proxies=proxies or [],
@@ -157,6 +160,35 @@ def run_jobspy_scrape(
                     continue
                 seen_hashes.add(job.content_hash)
                 all_jobs.append(job)
+
+    # --- LinkedIn: single conservative query, Bengaluru only, no description fetch ---
+    # One query, one location, low result count = minimal footprint on LinkedIn's servers.
+    # This does NOT use your LinkedIn account — it's unauthenticated HTTP only.
+    if include_linkedin:
+        logger.info("[JobSpy] LinkedIn (conservative): 'Technical Program Manager' in 'Bengaluru, India'")
+        try:
+            df_li = scrape_jobs(
+                site_name=["linkedin"],
+                search_term="Technical Program Manager",
+                location="Bengaluru, India",
+                results_wanted=LINKEDIN_MAX_RESULTS,
+                hours_old=hours_old,
+                linkedin_fetch_description=LINKEDIN_FETCH_DESCRIPTION,
+                description_format="markdown",
+                verbose=1,
+                proxies=proxies or [],
+            )
+            if df_li is not None and not df_li.empty:
+                for _, row in df_li.iterrows():
+                    job = _row_to_job_posting(row)
+                    if job is None or is_excluded_title(job.title):
+                        continue
+                    if job.content_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(job.content_hash)
+                    all_jobs.append(job)
+        except Exception as exc:
+            logger.warning("[JobSpy] LinkedIn conservative scrape failed: %s", exc)
 
     logger.info("[JobSpy] Total unique jobs collected: %d", len(all_jobs))
     return all_jobs
